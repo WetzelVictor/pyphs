@@ -1,7 +1,8 @@
-# For mac only.
-.nojekyll
+# Allow local makefile
+makefile
 
 # For mac only.
+.nojekyll
 .DS_Store
 
 # Compiled python modules.
@@ -22,3 +23,5 @@
 # spyder project infos.
 /.spyproject/
 
+
+cover/

@@ -11,26 +11,103 @@ from pyphs.config import (CONFIG_METHOD, CONFIG_SIMULATION,
 from ..cpp.simu2cpp import simu2cpp, main_path
 from ..cpp.method2cpp import method2cpp, parameters
 from .. import Numeric
-from .data import Data
-from pyphs.misc.io import dump_files, with_files
+from .h5data import H5Data
+from pyphs.misc.tools import geteval
+
 import subprocess
 import progressbar
 import time
 import os
 import sys
+import shutil
+
+# -----------------------------------------------------------------------------
+# Functions for system call and bash execution
+
+def system_call(cmd, **popenArgs):
+    """
+    Execute a system command.
+    """
+
+    if sys.platform.startswith('win'):
+        shell = True
+    else:
+        shell = True
+
+    popenArgs['shell'] = shell
+
+    if VERBOSE >= 1:
+        print(cmd)
+
+    popenArgs['stderr'] = subprocess.STDOUT
+    popenArgs['stdout'] = subprocess.PIPE
+
+    try:
+        popenArgs.pop('check')
+    except KeyError:
+        pass
+
+    if VERBOSE >= 1:
+        pri = print
+    else:
+        def pri(*args):
+            pass
 
 
-class Simulation:
+    p = subprocess.Popen(cmd, **popenArgs)
+
+    while(True):
+        retcode = p.poll()  # returns None while subprocess is running
+        line = p.stdout.readline()
+        pri(line)
+        if(retcode is not None):
+            break
+
+
+#    p = subprocess.Popen(cmd, shell=shell,
+#                         stdout=subprocess.PIPE,
+#                         stderr=subprocess.STDOUT)
+#
+#    for line in iter(p.stdout.readline, b''):
+#        pri(line.decode())
+
+
+def execute_bash(text):
     """
-    object that stores data and methods for simulation of PortHamiltonianObject
+    Execute a bash script, ignoring lines starting with #
+
+    Parameter
+    ---------
+
+    text : str
+        Bash script content. Execution of each line iteratively.
+
     """
-    def __init__(self, method, config=None, inits=None, label=None):
+    for line in text.splitlines():
+        if line.startswith('#') or len(line) == 0:
+            pass
+        else:
+            system_call(line.split())
+
+
+# -----------------------------------------------------------------------------
+# Simulation class
+
+class Simulation(object):
+    """
+    Object for the iterative solving of Method object.
+    """
+
+    def __init__(self, method, config=None, inits=None,
+                 label=None, erase=True):
         """
         Parameters
         -----------
 
-        config : dic of configuration options
+        method : pyphs Method
+            Numerical method for the simulation.
 
+        config : dic of configuration options
             keys and default values are
 
               'fs': 48e3,           # Sample rate (Hz)
@@ -53,6 +130,15 @@ class Simulation:
             Dictionary with variable name as keys and initialization values
             as value. E.g: inits = {'x': [0, 0, 1]} to initalize state x
             with dim(x) = 3, x[0] = x[1] = 0 and x[2] = 1.
+
+        label : str of None (optional)
+            Simulation label. If None (the default), the method.label is used.
+
+        erase : bool (optional)
+            If True, any existing h5file with same path than data h5file is
+            erased. Else, it is used to initialize the data object.
+            The default is True.
+
         """
 
         self.method = method
@@ -74,7 +160,7 @@ class Simulation:
             config = {}
         else:
             for k in config.keys():
-                if not k in self.config.keys():
+                if k not in self.config.keys():
                     text = 'Configuration key "{0}" unknown.'.format(k)
                     raise AttributeError(text)
         self.config.update(config)
@@ -93,7 +179,11 @@ class Simulation:
         if inits is not None:
             self.inits.update(inits)
 
-        self.init_numericalCore()
+        self.init_numericalCore(erase=erase)
+
+    @property
+    def fs(self):
+        return self.config['fs']
 
     def config_numeric(self):
         dic = dict()
@@ -119,42 +209,57 @@ class Simulation:
             dic[k] = self.config[k]
         return dic
 
-    def init_numericalCore(self):
+    @property
+    def objlabel(self):
+        return self.method.label.upper()
+
+    def init_numericalCore(self, erase=True):
         """
         Build the Numeric from the Core.
         Additionnally, generate the c++ code if config['lang'] == 'c++'.
+
+        Parameter
+        ---------
+
+        erase : bool (optional)
+            If True, any existing h5file with same path than data h5file is
+            erased. Else, it is used to initialize the data object.
+            The default is True.
+
         """
+        self.cpp_path = os.path.join(main_path(self),
+                                     self.objlabel.lower())
+        self.work_path = os.getcwd()
+        self.src_path = os.path.join(self.cpp_path, 'src')
+        if os.path.exists(self.cpp_path):
+            shutil.rmtree(self.cpp_path)
+        os.mkdir(self.cpp_path)
+        os.mkdir(self.src_path)
+
         if not self.config['lang'] in ['c++', 'python']:
-            raise AttributeError('Unknows language {}'.format(self.config['lang']))
+            text = 'Unknows language {}'
+            raise AttributeError(text.format(self.config['lang']))
 
         elif self.config['lang'] == 'python':
             setattr(self, 'nums', Numeric(self.method,
                                           inits=self.inits,
                                           config=self.config_numeric()))
         elif self.config['lang'] == 'c++':
-            objlabel = self.method.label.upper()
-            self.work_path = os.getcwd()
-            self.cpp_path = os.path.join(main_path(self), objlabel.lower())
-            self.src_path = os.path.join(self.cpp_path, 'src')
-            if not os.path.exists(self.cpp_path):
-                os.mkdir(self.cpp_path)
-            if not os.path.exists(self.src_path):
-                os.mkdir(self.src_path)
-            method2cpp(self.method, objlabel=objlabel, path=self.src_path,
-                        inits=self.inits,
-                        config=self.config_numeric())
+            method2cpp(self.method, objlabel=self.objlabel, path=self.src_path,
+                       inits=self.inits,
+                       config=self.config_numeric())
 
-        self.data = Data(self.method, self.config)
+        self.data = H5Data(self.method, self.config, erase=erase)
 
     def init_method(self):
         """
         Build the numerical method.
         """
         if self.config_method() != self.method.config:
-            self.method.__init__(self.method._core, config=self.config_method())
+            self.method.__init__(self.method._core,
+                                 config=self.config_method())
 
-###############################################################################
-
+    # -------------------------------------------------------------------------
 
     def init(self, nt=None, u=None, p=None,  inits=None,
              config=None, subs=None):
@@ -200,7 +305,7 @@ class Simulation:
             subs = {}
         else:
             for k in subs.keys():
-                if not k in self.method.subs.keys():
+                if k not in self.method.subs.keys():
                     init_numeric = True
             if not init_numeric:
                 init_parameters = True
@@ -218,22 +323,64 @@ class Simulation:
             equal = True
             for k in inits.keys():
                 try:
-                    equal = inits[k]==self.inits[k] and equal
+                    equal = inits[k] == self.inits[k] and equal
                 except KeyError:
                     equal = False
             if not equal:
                 self.inits.update(inits)
                 init_numeric = True
 
-        if any([self.config[k] != c[k] for k in list(self.config_numeric().keys()) +
-                                                list(self.config_method().keys())]):
+        if any([self.config[k] != c[k] for k in
+                list(self.config_numeric().keys()) +
+                list(self.config_method().keys())]):
             self.config.update(c)
             self.init_method()
 
         if init_numeric:
             self.init_numericalCore()
 
-        self.data.init_data(u, p, nt)
+        self.data.init_data(nt, sequ=u, seqp=p)
+
+    def init_parameters(self, subs=None):
+        """
+        Generate a new parameters.cpp based on a given substitution dictionary.
+        """
+        if subs is None:
+            subs = self.method.subs
+        else:
+            self.method.subs = subs
+        path = self.src_path
+        parameters_files = parameters(subs, self.objlabel)
+        for e in ['cpp', 'h']:
+            filename = os.path.join(path, 'parameters.{0}'.format(e))
+            string = parameters_files[e]
+            _file = open(filename, 'w')
+            _file.write(string)
+            _file.close()
+        if VERBOSE >= 2:
+            print('Parameters Files generated in \n{}'.format(path))
+
+    # -------------------------------------------------------------------------
+    # Progressbar
+
+    def _init_pb(self):
+        pb_widgets = ['\n', 'Simulation: ',
+                      progressbar.Percentage(), ' ',
+                      progressbar.Bar(), ' ',
+                      progressbar.ETA()
+                      ]
+        self._pbar = progressbar.ProgressBar(widgets=pb_widgets,
+                                             max_value=self.data.config['nt'])
+        self._pbar.start()
+
+    def _update_pb(self):
+        self._pbar.update(self.n)
+
+    def _close_pb(self):
+        self._pbar.finish()
+
+    # -------------------------------------------------------------------------
+    # Process
 
     def process(self):
         """
@@ -276,81 +423,50 @@ class Simulation:
             print(string.format(time_it))
 
         if VERBOSE >= 1:
-            print('Simulation: Done')
-
-    def init_parameters(self, subs=None):
-        """
-        Generate a new parameters.cpp based on a given substitution dictionary.
-        """
-        if subs is None:
-            subs = self.method.subs
-        else:
-            self.method.subs = subs
-        path = self.src_path
-        parameters_files = parameters(subs, 'rhodes'.upper())
-        for e in ['cpp', 'h']:
-            filename = path + os.sep + 'parameters.{0}'.format(e)
-            string = parameters_files[e]
-            _file = open(filename, 'w')
-            _file.write(string)
-            _file.close()
-        print('Parameters Files generated in \n{}'.format(path))
-
-    def _init_pb(self):
-        pb_widgets = ['\n', 'Simulation: ',
-                      progressbar.Percentage(), ' ',
-                      progressbar.Bar(), ' ',
-                      progressbar.ETA()
-                      ]
-        self._pbar = progressbar.ProgressBar(widgets=pb_widgets,
-                                             max_value=self.data.config['nt'])
-        self._pbar.start()
-
-    def _update_pb(self):
-        self._pbar.update(self.n)
-
-    def _close_pb(self):
-        self._pbar.finish()
+            print('\nSimulation: Done')
 
     def _process_py(self):
 
-        # get generators of u and p
+        # get values for u and p
         data = self.data
-        load = {'imin': 0, 'imax': None, 'decim': 1}
-        seq_u = data.u(**load)
-        seq_p = data.p(**load)
+        tslice = slice(0, None, 1)
+        data.h5open()
+        seq_u = data.u(tslice=tslice)
+        seq_p = data.p(tslice=tslice)
 
-        path = os.path.join(self.config['path'], 'data')
-        list_of_files = list(self.config['files'])
+        names = list(self.config['dnames'])
 
-        def process(files):
-            if self.config['pbar']:
-                self._init_pb()
+        # progressbar
+        if self.config['pbar'] and VERBOSE >= 1:
+            self._init_pb()
 
-            # init time step
-            self.n = 0
+        # init time step
+        self.n = 0
 
-            # process
-            for (u, p) in zip(seq_u, seq_p):
-                # update numerics
-                self.nums.update(u=u, p=p)
+        # process
+        for i, (u, p) in enumerate(zip(seq_u, seq_p)):
 
-                # write to files
-                dump_files(self.nums, files)
+            # update numerics
+            self.nums.update(u=u, p=p)
 
-                self.n += 1
+            vecs = dict(zip(names,
+                            [geteval(self.nums, name) for name in names]))
+            # write to files
+            data.h5dump_vecs(self.n, vecs)
 
-                # update progressbar
-                if self.config['pbar']:
-                    self._update_pb()
+            self.n += 1
 
-            if self.config['pbar']:
-                self._close_pb()
+            # update progressbar
+            if self.config['pbar'] and VERBOSE >= 1:
+                self._update_pb()
 
-            time.sleep(0.1)
+        # progressbar
+        if self.config['pbar'] and VERBOSE >= 1:
+            self._close_pb()
 
-        with_files(path, list_of_files, process)
-        # close_files(files)
+        time.sleep(1e-3)
+
+        data.h5close()
 
     def _process_cpp(self):
 
@@ -360,14 +476,72 @@ class Simulation:
         # go to build folder
         os.chdir(self.cpp_path)
 
-        # execute the bash script
-        self.system_call('./run.sh')
+        # Commands
+        cmd = {
+            'build_tree': '%s . -Bbuild' % self.config['cmake'],
+            'compile_src': '%s --build build -- -j3' % self.config['cmake']
+            }
+
+        # options for the subprocess.run method
+        sp_config = {
+            "cwd": self.cpp_path,
+            "stderr": subprocess.PIPE,
+            "check": True,
+            "universal_newlines": True,
+            "shell": True,
+            }
+
+        # Perform build
+        with open(os.path.join(sp_config["cwd"], "build.log"), 'w') as fid:
+
+            sp_config['stdout'] = fid
+
+            # Running commands
+            try:
+                # subprocess.run has been introduced in py3.5
+                if hasattr(subprocess, 'run'):
+                    subprocess.run(cmd['build_tree'], **sp_config)
+                    subprocess.run(cmd['compile_src'], **sp_config)
+                else:
+                    system_call(cmd['build_tree'], **sp_config)
+                    system_call(cmd['compile_src'], **sp_config)
+
+            except subprocess.CalledProcessError as error:
+
+                # Printing errors
+                print(
+                    '\nAn error occured while building simulation executable.')
+                print('See log file {0} for details\n'.format(fid.name))
+
+                # go back to work folder
+                os.chdir(self.work_path)
+
+                raise error
+
+        # VERBOSE: print build log
+        if VERBOSE >= 3:
+            build_log = open('build.log', 'r')
+            for line in build_log:
+                print(line)
+
+        # Running executable simulation
+
+        # subprocess.run has been introduced in py3.5
+#        if hasattr(subprocess, 'run'):
+#            process = subprocess.run('./bin/%s' % self.label, **sp_config)
+#            print(process.stdout)
+#
+#        else:
+#            process = system_call(['./bin/%s' % self.label, ], **sp_config)
+
+        cmd = './bin/{0}'.format(self.label)
+        self.system_call(cmd, **sp_config)
 
         # go back to work folder
         os.chdir(self.work_path)
 
     @staticmethod
-    def system_call(cmd):
+    def system_call(cmd, **kwargs):
         """
         Execute a system command.
 
@@ -377,13 +551,15 @@ class Simulation:
         cmd : list
             List of arguments.
 
+        kwargs : keyword arguments to
+
         Example
         -------
         Change directory with
-        cmd = ['cd', './my/folder']
+        cmd = 'cd ./my/folder'
         system_call(cmd)
         """
-        system_call(cmd)
+        system_call(cmd, **kwargs)
 
     @staticmethod
     def execute_bash(text):
@@ -397,54 +573,3 @@ class Simulation:
             Bash script content. Execution of each line iteratively.
         """
         execute_bash(text)
-
-
-def system_call(cmd):
-    """
-    Execute a system command.
-
-    Parameter
-    ---------
-
-    cmd : list
-        List of arguments.
-
-    Example
-    -------
-
-    Change directory with
-
-    >>> cmd = ['cd', './my/folder']
-    >>> system_call(cmd)
-
-    """
-    if sys.platform.startswith('win'):
-        shell = True
-    else:
-        shell = True
-    if VERBOSE >= 1:
-        print(cmd)
-    p = subprocess.Popen(cmd, shell=shell,
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
-    for line in iter(p.stdout.readline, b''):
-        l = line.decode()
-        if VERBOSE >= 1:
-            print(l)
-
-
-def execute_bash(text):
-    """
-    Execute a bash script, ignoring lines starting with #
-
-    Parameter
-    ---------
-
-    text : str
-        Bash script content. Execution of each line iteratively.
-    """
-    for line in text.splitlines():
-        if line.startswith('#') or len(line) == 0:
-            pass
-        else:
-            system_call(line.split())

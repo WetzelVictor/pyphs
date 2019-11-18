@@ -8,9 +8,10 @@ Created on Tue Dec 27 15:11:30 2016
 from __future__ import absolute_import, division, print_function
 
 from unittest import TestCase
+from .faustFx import test_faust_fx_generation
 from .signalsTest import signal_synthesis, signal_waves
 from .NetlistTests import test_netslist
-from .GraphTests import (graph, target_edges, target_M, split_sp,
+from .GraphTests import (graph, target_edges, target_M, sp_split,
                             plot_Graph, plot_GraphAnalysis)
 from .LatexTest import TestCore2Tex
 from .SimulationTest import (simulation_rlc_with_split,
@@ -20,7 +21,7 @@ from .SimulationTest import (simulation_rlc_with_split,
                                 simulation_nlcore_full,
                                 simulation_rlc_cpp)
 from .SimulationPlotsTest import (plot_rlc_with_split,
-                                     plot_power_balance_nlcore_with_split,
+                                     dataH5File,
                                      plot_power_balance_rlc_with_split,
                                      TranferFunction)
 
@@ -31,6 +32,8 @@ from .CoreTests import (test_allsymbs, test_build_eval, test_freesymbols,
 
 
 from .cppTest import cpp_nlcore_full
+from .JuceFxTest import test_method2jucefx
+
 import numpy as np
 
 
@@ -75,8 +78,8 @@ class TestGraph(TestCase):
         results = (test_M == np.zeros(target_M.shape))
         self.assertTrue(all(list(results.flatten())))
 
-    def test_split_sp(self):
-        self.assertTrue(split_sp())
+    def test_sp_split(self):
+        self.assertTrue(sp_split())
 
     def test_plot_Graph(self):
         self.assertTrue(plot_Graph())
@@ -86,7 +89,9 @@ class TestGraph(TestCase):
 
 
 class TestCore2Latex(TestCase):
+
     def test_core_2_latex(self):
+
         self.assertTrue(TestCore2Tex())
 
 
@@ -198,12 +203,22 @@ class TestExamples(TestCase):
         from pyphs.examples.oscillator_nl_dual.oscillator_nl_dual import core as oscillator_nl_dual_core
         self.assertTrue(True)
 
+    def test_import_examples21(self):
+        from pyphs.examples.sp_circuit.sp_circuit import core as sp_circuit_core
+        self.assertTrue(len(sp_circuit_core.x) == 3)
+
+
+class TestJuce(TestCase):
+    def test_method2juce_fx(self):
+        self.assertTrue(test_method2jucefx())
+
+
 class TestPlots(TestCase):
     def test_plot_rlc_with_split(self):
         self.assertTrue(plot_rlc_with_split())
 
-    def test_plot_power_balance_nlcore_with_split(self):
-        self.assertTrue(plot_power_balance_nlcore_with_split())
+    def test_dataH5File(self):
+        self.assertTrue(dataH5File())
 
     def test_plot_power_balance_rlc_with_split(self):
         self.assertTrue(plot_power_balance_rlc_with_split())
@@ -253,3 +268,8 @@ class TestCorefunctions(TestCase):
 
     def test_allsymbs(self):
         self.assertTrue(test_allsymbs())
+
+
+class TestFaustGeneration(TestCase):
+    def test_faust_fx_generation(self):
+        self.assertTrue(test_faust_fx_generation())
